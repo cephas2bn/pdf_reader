@@ -7,7 +7,7 @@ OutputDir=dist
 OutputBaseFilename=PDFReaderSetup
 Compression=lzma
 SolidCompression=yes
-SetupIconFile=app\icon.ico
+SetupIconFile=app\app_fixed.ico
 
 [Files]
 Source: "dist\PDFReader.exe"; DestDir: "{app}"; Flags: ignoreversion
