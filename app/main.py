@@ -4,6 +4,9 @@ import fitz  # PyMuPDF
 import pypdf
 from PySide6.QtCore import QSettings
 from PySide6.QtCore import Qt, QSize
+from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+from PySide6.QtGui import QIcon
+
 from PySide6.QtGui import (
     QAction, QIcon, QImage, QKeySequence, QPainter, QColor, QPixmap
 )
@@ -13,11 +16,17 @@ from PySide6.QtWidgets import (
     QStyle, QSpinBox, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout, QInputDialog
 )
 
+def resource_path(relative_path):
+    """Get absolute path to resource (works for dev + PyInstaller exe)."""
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 # ------------------------- Helper widgets ------------------------- #
 class PDFTab(QWidget):
     def __init__(self, file_path: str, parent=None, password: str = None):
         super().__init__(parent)
+        self.file_path = file_path
         # Open with password if given
         self.doc = fitz.open(file_path)
         if self.doc.needs_pass:
@@ -177,6 +186,30 @@ class PDFTab(QWidget):
         out = [f"Pages: {len(self.doc)}"]
         for k, v in meta.items(): out.append(f"{k}: {v}")
         return "\n".join(out)
+    
+    def extract_pages_to(self, out_path: str, ranges_text: str):
+        """
+        Save only selected page ranges to a new PDF.
+        Example: "1-3,5,7-9"
+        """
+        reader = pypdf.PdfReader(self.file_path)
+        writer = pypdf.PdfWriter()
+
+        def parse_ranges(s):
+            for part in s.replace(" ", "").split(","):
+                if "-" in part:
+                    a, b = map(int, part.split("-"))
+                    for k in range(a, b + 1):
+                        yield k
+                elif part:
+                    yield int(part)
+
+        for p in parse_ranges(ranges_text):
+            if 1 <= p <= len(reader.pages):
+                writer.add_page(reader.pages[p - 1])
+
+        with open(out_path, "wb") as f:
+            writer.write(f)
 
 
 # ------------------------- Main Window ------------------------- #
@@ -187,6 +220,9 @@ class MainWindow(QMainWindow):
         self.dark_enabled = self.settings.value("dark_enabled", False, type=bool)
         if self.dark_enabled:
             self.toggle_dark_mode()
+        self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "icon.png"))) 
+        self.setMinimumSize(900, 700)   # not too small
+        self.resize(1200, 800)          # comfortable initial size
 
         # Tabs
         self.tabs = QTabWidget()
@@ -230,6 +266,9 @@ class MainWindow(QMainWindow):
         self.act_extract = QAction("Extract Pages...", self, triggered=self.action_extract)
         self.act_close = QAction("Close Tab", self, shortcut=QKeySequence.Close, triggered=self.action_close_tab)
         self.act_exit = QAction("Exit", self, shortcut=QKeySequence.Quit, triggered=self.close)
+        self.act_print = QAction("Print...", self, shortcut=QKeySequence.Print, triggered=self.action_print)
+        file_menu.addAction(self.act_print)
+
 
         file_menu.addActions([self.act_open, self.act_saveas])
         file_menu.addSeparator()
@@ -337,7 +376,7 @@ class MainWindow(QMainWindow):
     # ---------- Actions ---------- #
     def active_tab(self): return self.tabs.currentWidget() if isinstance(self.tabs.currentWidget(), PDFTab) else None
     def _update_action_states(self, has_doc: bool): 
-        for act in [self.act_saveas, self.act_prev, self.act_next, self.act_zoom_in, self.act_zoom_out, self.act_rotate, self.act_info]: act.setEnabled(has_doc)
+        for act in [self.act_saveas, self.act_prev, self.act_next, self.act_zoom_in, self.act_zoom_out, self.act_rotate, self.act_print, self.act_info]: act.setEnabled(has_doc)
 
     def update_status(self):
         tab = self.active_tab()
@@ -449,6 +488,39 @@ class MainWindow(QMainWindow):
         if tab:
             tab.find_prev()
 
+    def action_print(self):
+        tab = self.active_tab()
+        if not tab:
+            return
+
+        printer = QPrinter(QPrinter.HighResolution)
+        dialog = QPrintDialog(printer, self)
+        if dialog.exec() != QPrintDialog.Accepted:
+            return
+
+        painter = QPainter()
+        if not painter.begin(printer):
+            QMessageBox.critical(self, "Print Error", "Could not start printer.")
+            return
+
+        try:
+            for page_num in range(len(tab.doc)):
+                if page_num > 0:
+                    printer.newPage()
+
+                page = tab.doc[page_num]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)  # 2x for good resolution
+                qimg = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+
+                rect = painter.viewport()
+                size = qimg.size()
+                size.scale(rect.size(), Qt.KeepAspectRatio)
+                painter.setViewport(rect.x(), rect.y(), size.width(), size.height())
+                painter.setWindow(qimg.rect())
+                painter.drawImage(0, 0, qimg)
+        finally:
+            painter.end()
+
     # ---------- File actions ---------- #
     def action_merge(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select PDFs to Merge", "", "PDF Files (*.pdf)")
@@ -546,7 +618,9 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setApplicationName("PDF Reader / Editor")   # ✅ sets proper title
+    app.setApplicationName("PDF Reader / Editor") 
+    #app.setWindowIcon(QIcon("app/icon.ico"))
+    app.setWindowIcon(QIcon(resource_path("app/icon.ico")))
     win = MainWindow()
     win.setWindowTitle("PDF Reader / Editor")       # ✅ override window title
     win.show()
